@@ -30,11 +30,13 @@
     </main>
 
     <footer class="footer">
+        {% block footer %}
         <div class="footer-inner">
             <span class="brand-icon">◈</span>
             <span class="footer-name">Spendly</span>
             <p class="footer-copy">Track every rupee. Own your finances.</p>
         </div>
+        {% endblock %}
     </footer>
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
