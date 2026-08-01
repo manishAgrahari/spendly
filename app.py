@@ -1,12 +1,16 @@
 import sqlite3
 
 from flask import Flask, redirect, render_template, request, session, url_for
-from werkzeug.security import generate_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from database.db import get_db, init_db, seed_db
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "spendly-dev-secret-key"  # local/dev only — not for production
+
+# Used to check against when no matching user is found, so a missing email and
+# a wrong password take the same amount of work and never crash on None.
+_DUMMY_PASSWORD_HASH = generate_password_hash("not-a-real-password")
 
 with app.app_context():
     init_db()
@@ -61,9 +65,28 @@ def register():
     return redirect(url_for("landing"))
 
 
-@app.route("/login")
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    return render_template("login.html")
+    if request.method == "GET":
+        return render_template("login.html")
+
+    email = request.form.get("email", "").strip().lower()
+    password = request.form.get("password", "")
+
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, password_hash FROM users WHERE email = ?", (email,)
+    ).fetchone()
+    conn.close()
+
+    hash_to_check = user["password_hash"] if user else _DUMMY_PASSWORD_HASH
+    password_ok = check_password_hash(hash_to_check, password)
+
+    if user is None or not password_ok:
+        return render_template("login.html", error="Invalid email or password.")
+
+    session["user_id"] = user["id"]
+    return redirect(url_for("landing"))
 
 
 @app.route("/terms")
@@ -82,7 +105,8 @@ def privacy():
 
 @app.route("/logout")
 def logout():
-    return "Logout — coming in Step 3"
+    session.pop("user_id", None)
+    return redirect(url_for("landing"))
 
 
 @app.route("/profile")
