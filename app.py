@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime
 
 from flask import Flask, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -109,39 +110,98 @@ def logout():
     return redirect(url_for("landing"))
 
 
+def _get_recent_transactions(user_id, limit=10):
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT date, COALESCE(description, '') AS description, category, amount
+        FROM expenses
+        WHERE user_id = ?
+        ORDER BY date DESC, id DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def _get_summary_stats(user_id):
+    conn = get_db()
+
+    total_row = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) AS total, COUNT(*) AS count FROM expenses WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+
+    top_category_row = conn.execute(
+        "SELECT category FROM expenses WHERE user_id = ? "
+        "GROUP BY category ORDER BY SUM(amount) DESC, category ASC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+
+    conn.close()
+
+    top_category = top_category_row["category"] if top_category_row else "No expenses yet"
+
+    return {
+        "total_spent": total_row["total"],
+        "transaction_count": total_row["count"],
+        "top_category": top_category,
+    }
+
+
+def _get_category_breakdown(user_id, total_spent):
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT category AS name, SUM(amount) AS amount
+        FROM expenses
+        WHERE user_id = ?
+        GROUP BY category
+        ORDER BY amount DESC, category ASC
+        """,
+        (user_id,),
+    ).fetchall()
+    conn.close()
+
+    return [
+        {
+            "name": row["name"],
+            "amount": row["amount"],
+            "percent": round(row["amount"] / total_spent * 100) if total_spent else 0,
+        }
+        for row in rows
+    ]
+
+
 @app.route("/profile")
 def profile():
     if not session.get("user_id"):
         return redirect(url_for("login"))
 
+    user_id = session["user_id"]
+
+    conn = get_db()
+    user_row = conn.execute(
+        "SELECT name, email, created_at FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    conn.close()
+
+    created_at = datetime.strptime(user_row["created_at"], "%Y-%m-%d %H:%M:%S")
+    name_parts = user_row["name"].split()
+    initials = "".join(part[0] for part in name_parts[:2]).upper()
+
     user = {
-        "name": "Demo User",
-        "email": "demo@spendly.com",
-        "member_since": "March 2026",
-        "initials": "DU",
+        "name": user_row["name"],
+        "email": user_row["email"],
+        "member_since": created_at.strftime("%B %Y"),
+        "initials": initials,
     }
 
-    stats = {
-        "total_spent": 423.44,
-        "transaction_count": 8,
-        "top_category": "Shopping",
-    }
-
-    transactions = [
-        {"date": "2026-08-01", "description": "Groceries", "category": "Food", "amount": 12.50},
-        {"date": "2026-07-29", "description": "Monthly transit pass", "category": "Transport", "amount": 45.00},
-        {"date": "2026-07-27", "description": "Electricity bill", "category": "Bills", "amount": 89.99},
-        {"date": "2026-07-24", "description": "Movie night", "category": "Entertainment", "amount": 60.00},
-        {"date": "2026-07-21", "description": "New shoes", "category": "Shopping", "amount": 150.00},
-    ]
-
-    categories = [
-        {"name": "Shopping", "amount": 150.00, "percent": 35},
-        {"name": "Bills", "amount": 89.99, "percent": 21},
-        {"name": "Entertainment", "amount": 60.00, "percent": 14},
-        {"name": "Transport", "amount": 45.00, "percent": 11},
-        {"name": "Food", "amount": 12.50, "percent": 3},
-    ]
+    stats = _get_summary_stats(user_id)
+    transactions = _get_recent_transactions(user_id)
+    categories = _get_category_breakdown(user_id, stats["total_spent"])
 
     return render_template(
         "profile.html",
