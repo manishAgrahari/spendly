@@ -110,34 +110,59 @@ def logout():
     return redirect(url_for("landing"))
 
 
-def _get_recent_transactions(user_id, limit=10):
+def _get_recent_transactions(user_id, limit=10, start_date=None, end_date=None):
     conn = get_db()
+
+    clauses = ["user_id = ?"]
+    params = [user_id]
+    if start_date:
+        clauses.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("date <= ?")
+        params.append(end_date)
+    params.append(limit)
+
     rows = conn.execute(
-        """
+        f"""
         SELECT date, COALESCE(description, '') AS description, category, amount
         FROM expenses
-        WHERE user_id = ?
+        WHERE {' AND '.join(clauses)}
         ORDER BY date DESC, id DESC
         LIMIT ?
         """,
-        (user_id, limit),
+        params,
     ).fetchall()
     conn.close()
     return rows
 
 
-def _get_summary_stats(user_id):
+def _get_summary_stats(user_id, start_date=None, end_date=None):
     conn = get_db()
 
+    clauses = ["user_id = ?"]
+    params = [user_id]
+    if start_date:
+        clauses.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("date <= ?")
+        params.append(end_date)
+    where_sql = " AND ".join(clauses)
+
     total_row = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) AS total, COUNT(*) AS count FROM expenses WHERE user_id = ?",
-        (user_id,),
+        f"""
+        SELECT COALESCE(SUM(amount),0) AS total, COUNT(*) AS count
+        FROM expenses
+        WHERE {where_sql}
+        """,
+        params,
     ).fetchone()
 
     top_category_row = conn.execute(
-        "SELECT category FROM expenses WHERE user_id = ? "
+        f"SELECT category FROM expenses WHERE {where_sql} "
         "GROUP BY category ORDER BY SUM(amount) DESC, category ASC LIMIT 1",
-        (user_id,),
+        params,
     ).fetchone()
 
     conn.close()
@@ -151,17 +176,27 @@ def _get_summary_stats(user_id):
     }
 
 
-def _get_category_breakdown(user_id, total_spent):
+def _get_category_breakdown(user_id, total_spent, start_date=None, end_date=None):
     conn = get_db()
+
+    clauses = ["user_id = ?"]
+    params = [user_id]
+    if start_date:
+        clauses.append("date >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("date <= ?")
+        params.append(end_date)
+
     rows = conn.execute(
-        """
+        f"""
         SELECT category AS name, SUM(amount) AS amount
         FROM expenses
-        WHERE user_id = ?
+        WHERE {' AND '.join(clauses)}
         GROUP BY category
         ORDER BY amount DESC, category ASC
         """,
-        (user_id,),
+        params,
     ).fetchall()
     conn.close()
 
@@ -182,6 +217,26 @@ def profile():
 
     user_id = session["user_id"]
 
+    start_date_raw = request.args.get("start_date", "").strip()
+    end_date_raw = request.args.get("end_date", "").strip()
+
+    start_date = None
+    end_date = None
+    try:
+        if start_date_raw:
+            datetime.strptime(start_date_raw, "%Y-%m-%d")
+            start_date = start_date_raw
+        if end_date_raw:
+            datetime.strptime(end_date_raw, "%Y-%m-%d")
+            end_date = end_date_raw
+    except ValueError:
+        start_date = None
+        end_date = None
+
+    if start_date and end_date and start_date > end_date:
+        start_date = None
+        end_date = None
+
     conn = get_db()
     user_row = conn.execute(
         "SELECT name, email, created_at FROM users WHERE id = ?", (user_id,)
@@ -199,9 +254,11 @@ def profile():
         "initials": initials,
     }
 
-    stats = _get_summary_stats(user_id)
-    transactions = _get_recent_transactions(user_id)
-    categories = _get_category_breakdown(user_id, stats["total_spent"])
+    stats = _get_summary_stats(user_id, start_date=start_date, end_date=end_date)
+    transactions = _get_recent_transactions(user_id, start_date=start_date, end_date=end_date)
+    categories = _get_category_breakdown(
+        user_id, stats["total_spent"], start_date=start_date, end_date=end_date
+    )
 
     return render_template(
         "profile.html",
@@ -209,6 +266,8 @@ def profile():
         stats=stats,
         transactions=transactions,
         categories=categories,
+        start_date=start_date,
+        end_date=end_date,
     )
 
 
